@@ -1,4 +1,4 @@
-// pages/index.js - REDISEÑO MÁS ACTUAL (clean + moderno)
+// pages/index.js - VERSIÓN ACTUALIZADA SIN API JOIN ✅
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
@@ -56,25 +56,12 @@ export default function Home() {
     goRoom(data.code);
   };
 
-  const joinRoom = async () => {
+  // ✅ ACTUALIZADO: Ya no llama a la API, va directo a la sala
+  const joinRoom = () => {
     const code = room.trim().toUpperCase();
     if (!name.trim() || code.length !== 5) return;
 
-    setLoading(true);
-    const res = await fetch("/api/rooms/join", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, name: name.trim() }),
-    });
-
-    const data = await res.json();
-    setLoading(false);
-
-    if (!res.ok) {
-      alert(data?.error || "No se pudo unir a la sala");
-      return;
-    }
-
+    // El socket validará si la sala existe cuando intente conectarse
     goRoom(code);
   };
 
@@ -227,8 +214,6 @@ export default function Home() {
           </div>
         </div>
       </div>
-
-      {/* nada de style jsx, todo tailwind, menos dolor */}
     </div>
   );
 }

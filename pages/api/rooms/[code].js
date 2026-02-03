@@ -1,27 +1,30 @@
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
+// pages/api/rooms/[code].js
+import { getRoom } from "@/lib/game/roomStore";
 
-export default async function handler(req, res) {
+export default function handler(req, res) {
   const code = String(req.query.code || "")
     .trim()
     .toUpperCase();
-  if (code.length !== 5) return res.status(400).json({ error: "Invalid code" });
 
-  const { data: room, error: roomErr } = await supabaseAdmin
-    .from("rooms")
-    .select("code")
-    .eq("code", code)
-    .maybeSingle();
+  if (code.length !== 5) {
+    return res.status(400).json({ error: "Invalid code" });
+  }
 
-  if (roomErr) return res.status(500).json({ error: "DB error" });
-  if (!room) return res.status(404).json({ error: "Room not found" });
+  const room = getRoom(code);
 
-  const { data: players, error: pErr } = await supabaseAdmin
-    .from("players")
-    .select("name,is_host,connected")
-    .eq("room_code", code)
-    .order("joined_at", { ascending: true });
+  if (!room) {
+    return res.status(404).json({ error: "Room not found" });
+  }
 
-  if (pErr) return res.status(500).json({ error: "DB error" });
+  // Convertir Map de jugadores a array
+  const players = Array.from(room.players.values()).map((p) => ({
+    name: p.name,
+    is_host: p.isHost,
+    connected: p.connected ?? true,
+  }));
 
-  return res.status(200).json({ code, players });
+  return res.status(200).json({
+    code: room.code,
+    players,
+  });
 }

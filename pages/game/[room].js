@@ -1,7 +1,9 @@
-// pages/game/[room].js - VERSIÓN CON TODAS LAS INTEGRACIONES ✅
+// pages/game/[room].js - VERSIÓN COMPLETA ACTUALIZADA ✅
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
-import io from "socket.io-client";
+
+// ✅ Importar cliente centralizado
+import { getSocket, connectSocket, disconnectSocket } from "@/lib/socket";
 
 import {
   HeaderBar,
@@ -13,11 +15,8 @@ import {
   GameOverPhase,
 } from "@/components/game";
 
-// ✅ AGREGADO: Importar GameStats y SoundSystem
 import GameStats from "@/components/GameStats";
 import { useSoundSystem } from "@/components/SoundSystem";
-
-let socket;
 
 export default function GameRoom() {
   const router = useRouter();
@@ -31,74 +30,70 @@ export default function GameRoom() {
   const [question, setQuestion] = useState("");
   const [answered, setAnswered] = useState({});
   const [isConnected, setIsConnected] = useState(false);
-
-  // ✅ AGREGADO: Estado para GameStats
   const [showStats, setShowStats] = useState(false);
 
-  // ✅ AGREGADO: Hook de sonidos
   const { playSound, isMuted, toggleMute } = useSoundSystem();
 
   useEffect(() => {
     if (!roomCode || roomCode.length !== 5 || !name) return;
 
-    const initSocket = async () => {
-      socket = io({
-        path: "/api/socketio",
-        reconnection: true,
-        reconnectionDelay: 1000,
-        reconnectionAttempts: 5,
-      });
+    // Conectar usando el cliente centralizado
+    const socket = connectSocket();
 
-      socket.on("connect", () => {
-        console.log("✅ Socket conectado:", socket.id);
-        setIsConnected(true);
-        socket.emit("room:join", { code: roomCode, name });
-      });
-
-      socket.on("room:snap", (s) => {
-        console.log("📥 Room snap recibido:", s);
-        const withMe = {
-          ...s,
-          players: (s.players || []).map((p) => ({
-            ...p,
-            isMe: p.name === name,
-          })),
-        };
-        setSnap(withMe);
-
-        // ✅ AGREGADO: Sincronizar answered desde el servidor
-        if (s.answered) {
-          setAnswered(s.answered);
-        }
-      });
-
-      socket.on("room:error", (e) => {
-        console.error("❌ Error de sala:", e);
-        setError(e?.error || "Error desconocido");
-      });
-
-      socket.on("disconnect", () => {
-        console.log("🔌 Socket desconectado");
-        setIsConnected(false);
-      });
-
-      socket.on("connect_error", (err) => {
-        console.error("❌ Error de conexión:", err);
-        setError("Error de conexión al servidor");
-      });
+    // Handlers específicos de esta sala
+    const handleConnect = () => {
+      console.log("✅ Conectado, uniéndose a sala:", roomCode);
+      setIsConnected(true);
+      socket.emit("room:join", { code: roomCode, name });
     };
 
-    initSocket();
+    const handleRoomSnap = (s) => {
+      console.log("📥 Room snap recibido:", s);
+      const withMe = {
+        ...s,
+        players: (s.players || []).map((p) => ({
+          ...p,
+          isMe: p.name === name,
+        })),
+      };
+      setSnap(withMe);
+
+      if (s.answered) {
+        setAnswered(s.answered);
+      }
+    };
+
+    const handleRoomError = (e) => {
+      console.error("❌ Error de sala:", e);
+      setError(e?.error || "Error desconocido");
+    };
+
+    const handleDisconnect = () => {
+      console.log("🔌 Desconectado");
+      setIsConnected(false);
+    };
+
+    // Registrar eventos
+    socket.on("connect", handleConnect);
+    socket.on("room:snap", handleRoomSnap);
+    socket.on("room:error", handleRoomError);
+    socket.on("disconnect", handleDisconnect);
+
+    // Si ya está conectado, unirse inmediatamente
+    if (socket.connected) {
+      socket.emit("room:join", { code: roomCode, name });
+      setIsConnected(true);
+    }
 
     return () => {
-      if (socket) {
-        socket.disconnect();
-        socket = null;
-      }
+      // Limpiar solo los listeners de esta sala
+      socket.off("connect", handleConnect);
+      socket.off("room:snap", handleRoomSnap);
+      socket.off("room:error", handleRoomError);
+      socket.off("disconnect", handleDisconnect);
     };
   }, [roomCode, name]);
 
-  // ✅ AGREGADO: Auto-abrir stats al terminar el juego
   useEffect(() => {
     if (snap?.phase === "GAME_OVER") {
       setShowStats(true);
@@ -109,6 +104,12 @@ export default function GameRoom() {
     if (!snap) return false;
     const me = snap.players?.find((p) => p.name === name);
     return Boolean(me?.isHost);
+  }, [snap, name]);
+
+  // ✅ NUEVO: Calcular si el usuario es el objetivo
+  const isTarget = useMemo(() => {
+    if (!snap) return false;
+    return snap.targetName === name;
   }, [snap, name]);
 
   if (error) {
@@ -144,42 +145,50 @@ export default function GameRoom() {
   const phase = snap.phase;
 
   const handleStart = () => {
+    const socket = getSocket();
     if (!socket) {
       console.error("❌ Socket no disponible");
       return;
     }
     console.log("🎮 Enviando game:start");
     socket.emit("game:start");
-    playSound("success"); // ✅ AGREGADO: Sonido al iniciar
+    playSound("success");
   };
 
   const handleSendQuestion = () => {
-    if (!question.trim() || !socket) return;
+    if (!question.trim()) return;
+    const socket = getSocket();
+    if (!socket) return;
+
     console.log("📝 Enviando pregunta:", question);
     socket.emit("question:send", { text: question.trim() });
     setQuestion("");
-    playSound("question"); // ✅ AGREGADO: Sonido al enviar pregunta
+    playSound("question");
   };
 
   const handleChooseAction = (idx, action) => {
+    const socket = getSocket();
     if (!socket) return;
+
     console.log("✅ Eligiendo acción:", { idx, action });
     setAnswered((prev) => ({ ...prev, [idx]: action }));
     socket.emit("answer:choose", { idx, action });
-    playSound(action === "SHOT" ? "shot" : "answer"); // ✅ AGREGADO: Sonido según acción
+    playSound(action === "SHOT" ? "shot" : "answer");
   };
 
   const handleNextRound = () => {
+    const socket = getSocket();
     if (!socket) return;
+
     console.log("➡️ Siguiente ronda");
     setAnswered({});
     socket.emit("round:next");
-    playSound("turn"); // ✅ AGREGADO: Sonido de cambio de turno
+    playSound("turn");
   };
 
-  // ✅ AGREGADO: Handler para reset desde GameStats
   const handleReset = () => {
     setShowStats(false);
+    const socket = getSocket();
     if (socket) {
       socket.emit("game:reset");
       playSound("success");
@@ -194,10 +203,10 @@ export default function GameRoom() {
             snap={snap}
             isHost={isHost}
             onStart={handleStart}
-            onShowStats={() => setShowStats(true)} // ✅ MODIFICADO
+            onShowStats={() => setShowStats(true)}
             onReset={() => router.push("/")}
-            isMuted={isMuted} // ✅ AGREGADO
-            onToggleMute={toggleMute} // ✅ AGREGADO
+            isMuted={isMuted}
+            onToggleMute={toggleMute}
           />
 
           <div className="grid lg:grid-cols-[300px_1fr] gap-4">
@@ -223,7 +232,7 @@ export default function GameRoom() {
                 <AnsweringPhase
                   questions={snap.questionsForTarget || []}
                   answered={answered}
-                  isHost={isHost}
+                  isTarget={isTarget} // ✅ CAMBIO: pasar isTarget en vez de isHost
                   onChoose={handleChooseAction}
                   onNextRound={handleNextRound}
                 />
@@ -241,7 +250,6 @@ export default function GameRoom() {
         </div>
       </div>
 
-      {/* ✅ AGREGADO: Modal de GameStats */}
       {showStats && (
         <GameStats
           players={snap.players || []}

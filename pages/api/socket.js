@@ -1,48 +1,7 @@
-// server.mjs - VERSIÓN CON TODOS LOS FIXES APLICADOS ✅
-import dotenv from "dotenv";
-import { fileURLToPath } from "url";
-import { dirname, join } from "path";
-
-// ⚠️ CRÍTICO: Cargar variables de entorno PRIMERO
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-dotenv.config({ path: join(__dirname, ".env.local") });
-
-// Validar que las variables de entorno están cargadas
-if (
-  !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-  !process.env.SUPABASE_SERVICE_ROLE_KEY
-) {
-  console.error("❌ ERROR: Faltan variables de entorno de Supabase");
-  console.error(
-    "NEXT_PUBLIC_SUPABASE_URL:",
-    process.env.NEXT_PUBLIC_SUPABASE_URL ? "✓" : "✗",
-  );
-  console.error(
-    "SUPABASE_SERVICE_ROLE_KEY:",
-    process.env.SUPABASE_SERVICE_ROLE_KEY ? "✓" : "✗",
-  );
-  process.exit(1);
-}
-
-// ✅ AHORA SÍ importar módulos que usan las variables
-import { createServer } from "http";
-import { parse } from "url";
-import next from "next";
+// pages/api/socket.js - VERSIÓN ACTUALIZADA CON ROTACIÓN ALEATORIA ✅
 import { Server } from "socket.io";
-import { supabaseAdmin } from "./lib/supabaseAdmin.js";
+import { getRoom, createRoom, deleteRoom } from "@/lib/game/roomStore";
 
-const dev = process.env.NODE_ENV !== "production";
-const hostname = "localhost";
-const port = 3000;
-
-const app = next({ dev, hostname, port });
-const handle = app.getRequestHandler();
-
-// Store de salas en memoria
-const rooms = new Map();
-
-// ✅ FIX #2: Sugerencias de preguntas
 const QUESTION_SUGGESTIONS = [
   "¿Cuál es tu mayor miedo?",
   "¿Qué es lo más vergonzoso que te pasó?",
@@ -66,7 +25,6 @@ function getRandomSuggestions(count = 6) {
   return shuffled.slice(0, count);
 }
 
-// 🎲 Función para desordenar array (algoritmo Fisher-Yates)
 function shuffleArray(array) {
   const shuffled = [...array];
   for (let i = shuffled.length - 1; i > 0; i--) {
@@ -76,29 +34,39 @@ function shuffleArray(array) {
   return shuffled;
 }
 
-function getRoom(code) {
-  return rooms.get(code) || null;
-}
+// ✅ NUEVO: Función para elegir objetivo aleatorio sin repeticiones
+function getRandomTarget(room) {
+  const playersArr = Array.from(room.players.values());
 
-function createRoom(code) {
-  if (!rooms.has(code)) {
-    rooms.set(code, {
-      code,
-      phase: "LOBBY",
-      currentRound: 1,
-      targetName: null,
-      players: new Map(),
-      shuffledQuestions: [], // 🎲 Guardamos el orden shuffleado para mantener consistencia
-    });
+  if (playersArr.length === 0) return null;
+
+  // Filtrar jugadores que no han sido objetivo recientemente
+  const recentTargets = room.recentTargets || [];
+  const availablePlayers = playersArr.filter(
+    (p) => !recentTargets.includes(p.name),
+  );
+
+  // Si todos ya fueron objetivo, resetear la lista
+  const candidates =
+    availablePlayers.length > 0 ? availablePlayers : playersArr;
+
+  // Elegir uno aleatorio
+  const randomIdx = Math.floor(Math.random() * candidates.length);
+  const target = candidates[randomIdx]?.name ?? null;
+
+  // Actualizar lista de objetivos recientes
+  if (!room.recentTargets) room.recentTargets = [];
+  room.recentTargets.push(target);
+
+  // Mantener solo los últimos N objetivos en memoria
+  const maxHistory = Math.min(playersArr.length - 1, 3);
+  if (room.recentTargets.length > maxHistory) {
+    room.recentTargets.shift();
   }
-  return rooms.get(code);
+
+  return target;
 }
 
-function deleteRoom(code) {
-  rooms.delete(code);
-}
-
-// ✅ FIX #1: Agregar answered y suggestions al snap
 function buildSnap(room, extra = {}) {
   const expected = Math.max(room.players.size - 1, 0);
 
@@ -119,25 +87,22 @@ function buildSnap(room, extra = {}) {
       waitingNames: extra.waitingNames || [],
     },
     questionsForTarget: extra.questionsForTarget ?? [],
-    answered: extra.answered ?? {}, // ✅ AGREGADO
-    suggestions: room.phase === "ASKING" ? getRandomSuggestions(6) : [], // ✅ AGREGADO
+    answered: extra.answered ?? {},
+    suggestions: room.phase === "ASKING" ? getRandomSuggestions(6) : [],
   };
 }
 
-app.prepare().then(() => {
-  const httpServer = createServer(async (req, res) => {
-    try {
-      const parsedUrl = parse(req.url, true);
-      await handle(req, res, parsedUrl);
-    } catch (err) {
-      console.error("Error handling request", err);
-      res.statusCode = 500;
-      res.end("Internal server error");
-    }
-  });
+export default function handler(req, res) {
+  if (res.socket.server.io) {
+    console.log("Socket.io ya está inicializado");
+    res.end();
+    return;
+  }
 
-  const io = new Server(httpServer, {
-    path: "/api/socketio",
+  console.log("🚀 Inicializando Socket.io...");
+
+  const io = new Server(res.socket.server, {
+    path: "/api/socket",
     addTrailingSlash: false,
     cors: {
       origin: "*",
@@ -145,11 +110,13 @@ app.prepare().then(() => {
     },
   });
 
+  res.socket.server.io = io;
+
   io.on("connection", (socket) => {
     console.log("✅ Cliente conectado:", socket.id);
 
     // JOIN ROOM
-    socket.on("room:join", async ({ code, name }) => {
+    socket.on("room:join", ({ code, name }) => {
       try {
         const roomCode = String(code || "")
           .trim()
@@ -165,26 +132,24 @@ app.prepare().then(() => {
 
         console.log("🔍 Validando sala:", roomCode);
 
-        // Validar que la sala existe en Supabase
-        const { data: roomExists, error } = await supabaseAdmin
-          .from("rooms")
-          .select("code")
-          .eq("code", roomCode)
-          .maybeSingle();
+        let room = getRoom(roomCode);
 
-        if (error) {
-          console.error("❌ Error consultando Supabase:", error);
-          socket.emit("room:error", { error: "Error al consultar la sala." });
-          return;
+        if (!room) {
+          console.log("🆕 Creando nueva sala:", roomCode);
+          room = createRoom(roomCode);
         }
 
-        if (!roomExists) {
-          console.log("❌ Sala no existe:", roomCode);
-          socket.emit("room:error", { error: "La sala no existe." });
-          return;
+        // ✅ NUEVO: Verificar si el jugador ya está conectado
+        const existingPlayer = Array.from(room.players.values()).find(
+          (p) => p.name === playerName,
+        );
+
+        if (existingPlayer) {
+          console.log("⚠️ Jugador ya existe, actualizando socket ID");
+          // Eliminar la conexión antigua
+          room.players.delete(existingPlayer.id);
         }
 
-        const room = createRoom(roomCode);
         const isHost = room.players.size === 0;
 
         room.players.set(socket.id, {
@@ -192,6 +157,7 @@ app.prepare().then(() => {
           name: playerName,
           isHost,
           shots: 0,
+          connected: true,
         });
 
         socket.data.roomCode = roomCode;
@@ -213,43 +179,34 @@ app.prepare().then(() => {
     });
 
     // START GAME
-    socket.on("game:start", async () => {
+    socket.on("game:start", () => {
       try {
         console.log("🎮 Iniciando juego...");
         const roomCode = socket.data.roomCode;
         const room = getRoom(roomCode);
 
         if (!room) {
-          console.log("❌ Sala no encontrada");
           socket.emit("room:error", { error: "Sala no encontrada." });
           return;
         }
 
         const me = room.players.get(socket.id);
         if (!me?.isHost) {
-          console.log("❌ No es host");
           socket.emit("room:error", { error: "Solo el host puede iniciar." });
           return;
         }
 
         if (room.players.size < 2) {
-          console.log("❌ Faltan jugadores");
           socket.emit("room:error", { error: "Mínimo 2 jugadores." });
           return;
         }
 
         room.phase = "ASKING";
 
-        const playersArr = Array.from(room.players.values());
-        const idx = (room.currentRound - 1) % playersArr.length;
-        room.targetName = playersArr[idx]?.name ?? null;
+        // ✅ CAMBIO: Usar selección aleatoria
+        room.targetName = getRandomTarget(room);
 
-        console.log(
-          "✅ Juego iniciado. Target:",
-          room.targetName,
-          "Phase:",
-          room.phase,
-        );
+        console.log("✅ Juego iniciado. Target:", room.targetName);
 
         io.to(roomCode).emit("room:snap", buildSnap(room));
       } catch (error) {
@@ -258,50 +215,77 @@ app.prepare().then(() => {
     });
 
     // SEND QUESTION
-    socket.on("question:send", async ({ text }) => {
+    socket.on("question:send", ({ text }) => {
       try {
         const room = getRoom(socket.data.roomCode);
         if (!room || room.phase !== "ASKING") return;
 
         const me = room.players.get(socket.id);
-        if (!me || me.name === room.targetName) return;
+        if (!me) return;
+
+        // ✅ VALIDACIÓN 1: El objetivo NO puede hacer preguntas
+        if (me.name === room.targetName) {
+          console.log("❌ El objetivo no puede hacer preguntas");
+          socket.emit("room:error", {
+            error: "¡Eres el objetivo! No puedes hacer preguntas esta ronda.",
+          });
+          return;
+        }
 
         const qText = String(text || "")
           .trim()
           .slice(0, 200);
         if (!qText) return;
 
-        await supabaseAdmin.from("questions").insert([
-          {
-            room_code: room.code,
-            round: room.currentRound,
-            target_name: room.targetName,
-            text: qText,
-          },
-        ]);
+        // ✅ VALIDACIÓN 2: Verificar si este jugador YA envió una pregunta en esta ronda
+        const existingQuestion = Array.from(room.questions.values()).find(
+          (q) =>
+            q.round === room.currentRound &&
+            q.targetName === room.targetName &&
+            q.askerSocketId === socket.id,
+        );
+
+        if (existingQuestion) {
+          console.log("❌ Jugador ya envió su pregunta:", me.name);
+          socket.emit("room:error", {
+            error: "Ya enviaste tu pregunta para esta ronda.",
+          });
+          return;
+        }
+
+        // Guardar pregunta con el ID del que pregunta
+        const questionId = `q_${room.code}_${++room.questionCounter}`;
+        room.questions.set(questionId, {
+          id: questionId,
+          text: qText,
+          round: room.currentRound,
+          targetName: room.targetName,
+          askerSocketId: socket.id, // ✅ NUEVO: Guardar quién preguntó
+          askerName: me.name, // ✅ NUEVO: Guardar nombre (para debug)
+          action: null,
+        });
 
         const expected = Math.max(room.players.size - 1, 0);
 
-        const { data: qs } = await supabaseAdmin
-          .from("questions")
-          .select("id,text")
-          .eq("room_code", room.code)
-          .eq("round", room.currentRound)
-          .eq("target_name", room.targetName)
-          .order("created_at", { ascending: true });
+        const currentQuestions = Array.from(room.questions.values()).filter(
+          (q) =>
+            q.round === room.currentRound && q.targetName === room.targetName,
+        );
 
-        const received = qs?.length || 0;
-        console.log("📝 Pregunta recibida:", received, "/", expected);
+        const received = currentQuestions.length;
+        console.log(
+          "📝 Pregunta recibida de:",
+          me.name,
+          "-",
+          received,
+          "/",
+          expected,
+        );
 
         if (expected > 0 && received >= expected) {
           room.phase = "ANSWERING";
-
-          // 🎲 Desordenar preguntas UNA SOLA VEZ y guardar el orden
-          room.shuffledQuestions = shuffleArray(qs || []);
-
-          console.log(
-            "✅ Todas las preguntas recibidas. Cambiando a ANSWERING (preguntas desordenadas)",
-          );
+          room.shuffledQuestions = shuffleArray(currentQuestions);
+          console.log("✅ Cambiando a ANSWERING");
         }
 
         io.to(room.code).emit(
@@ -321,25 +305,29 @@ app.prepare().then(() => {
     });
 
     // ANSWER CHOOSE
-    socket.on("answer:choose", async ({ idx, action }) => {
+    socket.on("answer:choose", ({ idx, action }) => {
       try {
         const room = getRoom(socket.data.roomCode);
         if (!room || room.phase !== "ANSWERING") return;
 
         const me = room.players.get(socket.id);
-        if (!me || me.name !== room.targetName) return;
+
+        // ✅ CAMBIO: Validar que solo el objetivo pueda responder
+        if (!me || me.name !== room.targetName) {
+          console.log("❌ Jugador no autorizado intentó responder:", me?.name);
+          return;
+        }
 
         const act = action === "ANSWER" || action === "SHOT" ? action : null;
         if (!act) return;
 
-        // 🎲 Usar el orden shuffleado guardado en memoria
         const q = room.shuffledQuestions?.[idx];
         if (!q?.id) return;
 
-        await supabaseAdmin
-          .from("questions")
-          .update({ action: act })
-          .eq("id", q.id);
+        const question = room.questions.get(q.id);
+        if (question) {
+          question.action = act;
+        }
 
         if (act === "SHOT") {
           const player = room.players.get(socket.id);
@@ -349,18 +337,8 @@ app.prepare().then(() => {
           }
         }
 
-        // 🎲 Actualizar el array shuffleado en memoria
-        const { data: qs2 } = await supabaseAdmin
-          .from("questions")
-          .select("id,action,text")
-          .eq("room_code", room.code)
-          .eq("round", room.currentRound)
-          .eq("target_name", room.targetName)
-          .order("created_at", { ascending: true });
-
-        // Mantener el mismo orden shuffleado pero con las acciones actualizadas
         room.shuffledQuestions = room.shuffledQuestions.map((sq) => {
-          const updated = qs2?.find((q) => q.id === sq.id);
+          const updated = room.questions.get(sq.id);
           return updated || sq;
         });
 
@@ -373,7 +351,6 @@ app.prepare().then(() => {
           console.log("✅ Todas respondidas. ROUND_END");
         }
 
-        // ✅ FIX #3: Construir objeto answered desde shuffledQuestions
         const answered = room.shuffledQuestions.reduce((acc, q, idx) => {
           if (q.action) acc[idx] = q.action;
           return acc;
@@ -385,7 +362,7 @@ app.prepare().then(() => {
             questionsForTarget: room.shuffledQuestions.map((q) => q.text),
             received: room.shuffledQuestions.length || 0,
             expected: Math.max(room.players.size - 1, 0),
-            answered, // ✅ AGREGADO
+            answered,
           }),
         );
       } catch (error) {
@@ -394,7 +371,7 @@ app.prepare().then(() => {
     });
 
     // NEXT ROUND
-    socket.on("round:next", async () => {
+    socket.on("round:next", () => {
       try {
         const room = getRoom(socket.data.roomCode);
         if (!room) return;
@@ -404,11 +381,16 @@ app.prepare().then(() => {
 
         room.currentRound += 1;
         room.phase = "ASKING";
-        room.shuffledQuestions = []; // 🎲 Limpiar preguntas shuffleadas
+        room.shuffledQuestions = [];
 
-        const playersArr = Array.from(room.players.values());
-        const idx = (room.currentRound - 1) % playersArr.length;
-        room.targetName = playersArr[idx]?.name ?? null;
+        for (const [id, q] of room.questions.entries()) {
+          if (q.round < room.currentRound) {
+            room.questions.delete(id);
+          }
+        }
+
+        // ✅ CAMBIO: Usar selección aleatoria
+        room.targetName = getRandomTarget(room);
 
         console.log(
           "➡️ Nueva ronda:",
@@ -417,20 +399,14 @@ app.prepare().then(() => {
           room.targetName,
         );
 
-        await supabaseAdmin
-          .from("questions")
-          .delete()
-          .eq("room_code", room.code)
-          .lt("round", room.currentRound);
-
         io.to(room.code).emit("room:snap", buildSnap(room));
       } catch (error) {
         console.error("❌ Error en round:next:", error);
       }
     });
 
-    // ✅ FIX #4: RESET GAME
-    socket.on("game:reset", async () => {
+    // RESET GAME
+    socket.on("game:reset", () => {
       try {
         const room = getRoom(socket.data.roomCode);
         if (!room) return;
@@ -438,24 +414,19 @@ app.prepare().then(() => {
         const me = room.players.get(socket.id);
         if (!me?.isHost) return;
 
-        // Resetear estado del juego
         room.phase = "LOBBY";
         room.currentRound = 1;
         room.targetName = null;
         room.shuffledQuestions = [];
+        room.questions.clear();
+        room.questionCounter = 0;
+        room.recentTargets = []; // ✅ AGREGADO: Limpiar historial de objetivos
 
-        // Resetear shots de jugadores
         room.players.forEach((player) => {
           player.shots = 0;
         });
 
         console.log("🔄 Juego reseteado:", room.code);
-
-        // Limpiar preguntas de la base de datos
-        await supabaseAdmin
-          .from("questions")
-          .delete()
-          .eq("room_code", room.code);
 
         io.to(room.code).emit("room:snap", buildSnap(room));
       } catch (error) {
@@ -481,12 +452,6 @@ app.prepare().then(() => {
     });
   });
 
-  httpServer
-    .once("error", (err) => {
-      console.error(err);
-      process.exit(1);
-    })
-    .listen(port, () => {
-      console.log(`✅ Servidor listo en http://${hostname}:${port}`);
-    });
-});
+  console.log("✅ Socket.io inicializado");
+  res.end();
+}

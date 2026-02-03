@@ -1,11 +1,12 @@
-// components/game/LobbyPhase.js
+// components/game/LobbyPhase.js - VERSIÓN CORREGIDA ✅
 export default function LobbyPhase({ snap, isHost, onStart }) {
-  const connectedCount = snap.players.filter((p) => p.connected).length;
+  const connectedCount = snap?.players?.length || 0;
 
-  // Debug logs corregidos
-  console.log("Players in lobby:", snap.players);
-  console.log("Connected count:", connectedCount);
-  console.log("Room data:", snap);
+  console.log("🔍 DEBUG Lobby:");
+  console.log("- Players:", snap.players);
+  console.log("- Connected count:", connectedCount);
+  console.log("- Is host:", isHost);
+  console.log("- Phase:", snap.phase);
 
   return (
     <div className="glass-card rounded-3xl p-6 border border-white/30 mb-6 text-center">
@@ -16,7 +17,7 @@ export default function LobbyPhase({ snap, isHost, onStart }) {
 
       {isHost ? (
         <button
-          className="btn-primary"
+          className="px-6 py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white font-black text-lg transition disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl hover:scale-105 active:scale-95"
           onClick={onStart}
           disabled={connectedCount < 2}
         >

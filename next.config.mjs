@@ -2,22 +2,12 @@
 const nextConfig = {
   reactStrictMode: true,
 
-  // ✅ Configuración explícita para Turbopack (Next.js 16+)
-  turbopack: {},
+  // ⚠️ IMPORTANTE: Next.js con Socket.io NO puede ser standalone
+  // standalone es solo para deployments serverless (Vercel, Netlify)
+  // Como usas Socket.io, necesitas un servidor Node.js persistente
 
-  // Si necesitas deshabilitar Turbopack y usar webpack tradicional:
-  // experimental: {
-  //   turbo: false
-  // },
-
-  // Configuración para producción
-  output: "standalone", // Optimiza para deploy
-
-  // Variables de entorno públicas
-  env: {
-    NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
-    NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-  },
+  // Descomentar solo si vas a deployar en un VPS/servidor dedicado
+  // output: "standalone",
 };
 
 export default nextConfig;
